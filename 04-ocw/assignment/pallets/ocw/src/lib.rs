@@ -115,8 +115,10 @@ pub mod pallet {
         id: Vec<u8>,
 		#[serde(deserialize_with = "de_string_to_bytes")]
         name: Vec<u8>,
-        priceUsd: 
-        sDotPriceInfo:
+        //supply: VecDeque<(u64, Permill)>,
+        supply: Vec<u8>,
+        #[serde(rename="priceUsd", deserialize_with = "de_string_to_bytes")] 
+        priceUsd: Vec<u8>,
 		#[serde(deserialize_with = "de_string_to_bytes")]
         explorer: Vec<u8>,
 
@@ -153,6 +155,21 @@ pub mod pallet {
 		}
 	}
 
+    impl fmt::Debug for DotPriceInfo {
+		// `fmt` converts the vector of bytes inside the struct back to string for
+		//   more friendly display.
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			write!(
+				f,
+				"{{ id: {}, name: {}, priceUsd: {} }}",
+				str::from_utf8(&self.id).map_err(|_| fmt::Error)?,
+				str::from_utf8(&self.name).map_err(|_| fmt::Error)?,
+				str::from_utf8(&self.priceUsd).map_err(|_| fmt::Error)?,
+				)
+		}
+	}
+
+
 	#[pallet::config]
 	pub trait Config: frame_system::Config + CreateSignedTransaction<Call<Self>> {
 		/// The overarching event type.
@@ -183,6 +200,7 @@ pub mod pallet {
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
 		NewNumber(Option<T::AccountId>, u64),
+		NewPrice(Option<T::AccountId>, (u64, Permill)),
 	}
 
 	// Errors inform users that something went wrong.
@@ -309,6 +327,18 @@ pub mod pallet {
 			Self::deposit_event(Event::NewNumber(None, number));
 			Ok(())
 		}
+
+        #[pallet::weight(10000)]
+		pub fn submit_price_signed(origin: OriginFor<T>, price: (u64, Permill)) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			//log::info!("submit_number_signed: ({}, {:?})", price, who);
+			Self::append_or_replace_price(price);
+
+			Self::deposit_event(Event::NewPrice(Some(who), price));
+			Ok(())
+		}
+
+
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -324,6 +354,18 @@ pub mod pallet {
 			});
 		}
 
+        
+        fn append_or_replace_price(price: (u64, Permill)) {
+			Prices::<T>::mutate(|prices| {
+				if prices.len() == NUM_VEC_LEN {
+					let _ = prices.pop_front();
+				}
+				prices.push_back(price);
+				log::info!("Number vector: {:?}", prices);
+			});
+		}
+
+
 		fn fetch_price_info() -> Result<(), Error<T>> {
 			// TODO: 这是你们的功课
 
@@ -337,6 +379,7 @@ pub mod pallet {
 			// 这个 http 请求可得到当前 DOT 价格：
 			// [https://api.coincap.io/v2/assets/polkadot](https://api.coincap.io/v2/assets/polkadot)。
 
+			log::info!("fetch_price_info 0000000");
 
 			// Create a reference to Local Storage value.
 			// Since the local storage is common for all offchain workers, it's a good practice
@@ -351,12 +394,13 @@ pub mod pallet {
 			// We will likely want to use `mutate` to access
 			// the storage comprehensively.
 			//
-			if let Ok(Some(dp_info)) = s_info.get::<DotPriceInfo>() {
+			if let Ok(Some(dp_info)) = s_info.get::<(u64, Permill)>() {
 				// gh-info has already been fetched. Return early.
 				log::info!("cached gh-info: {:?}", dp_info);
-				return Ok(());
+		//		return Ok(());
 			}
 
+			log::info!("fetch_price_info 0000001");
 			// Since off-chain storage can be accessed by off-chain workers from multiple runs, it is important to lock
 			//   it before doing heavy computations or write operations.
 			//
@@ -371,15 +415,42 @@ pub mod pallet {
 				rt_offchain::Duration::from_millis(LOCK_TIMEOUT_EXPIRATION)
 				);
 
-			// We try to acquire the lock here. If failed, we know the `fetch_n_parse` part inside is being
+			// We try to acquire the lock here. If failed, we know the `fetch_n_parse_dot_price` part inside is being
 			//   executed by previous run of ocw, so the function just returns.
 			if let Ok(_guard) = lock.try_lock() {
-				match Self::fetch_n_parse() {
-					Ok(dp_data) => { s_info.set(&dp_data.data); }
+				match Self::fetch_n_parse_dot_price() {
+					Ok(priceTruple) => { 
+                        s_info.set(&priceTruple); 
+                        let signer = Signer::<T, T::AuthorityId>::any_account();
+           
+                        // 我们用签名的交易，把读取到的DOT价格提交到链上
+                        // 为什么用交易来提交价格： 链上的数据不能直接修改
+                        // 为什么要签名: 因为一般来说，得有人为这个价格负责
+                        let result = signer.send_signed_transaction(|_acct|
+				        // This is the on-chain function
+				            Call::submit_price_signed(priceTruple)
+				            );
+
+                        // Display error if the signed tx fails.
+            			if let Some((acc, res)) = result {
+            				if res.is_err() {
+            					log::error!("failure: offchain_signed_tx: tx sent: {:?}", acc.id);
+            					return Err(<Error<T>>::OffchainSignedTxError);
+            				}
+            				// Transaction is sent successfully
+            				//return Ok(());
+            			}
+
+
+
+                    }
 					Err(err) => { return Err(err); }
 				}
 			}
+
+
 	
+			log::info!("fetch_price_info 0000003");
 			Ok(())
 		}
 
@@ -429,6 +500,10 @@ pub mod pallet {
 					Err(err) => { return Err(err); }
 				}
 			}
+
+
+
+
 			Ok(())
 		}
 
@@ -489,26 +564,39 @@ pub mod pallet {
 
         
         /// Fetch from remote and deserialize the JSON to a struct
-		fn fetch_n_parse_dot_price() -> Result<DotPriceData, Error<T>> {
+		fn fetch_n_parse_dot_price() -> Result<(u64, Permill), Error<T>> {
 			let resp_bytes = Self::fetch_from_remote_dot_price().map_err(|e| {
 				log::error!("fetch_from_remote_dot_price error: {:?}", e);
 				<Error<T>>::HttpFetchingError
 			})?;
 
+            log::info!("fetch_n_parse_dot_price 000");
+
 			let resp_str = str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::HttpFetchingError)?;
 			// Print out our fetched JSON string
 			log::info!("{}", resp_str);
+            let data: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+            let obj = data.as_object().unwrap();
+            let obj2 = obj.get("data").unwrap().as_object().unwrap();
+            let price = obj2.get("priceUsd").unwrap().as_str().unwrap();
+            let price_parts:Vec<&str>= price.split(".").collect();
+            let price_p1: u64 = price_parts[0].parse().unwrap_or(0);
+            let price_p2: u32 = price_parts[1][0..2].parse().unwrap_or(0);
+            let price_p2_ : Permill =  Permill::from_percent(price_p2);
+
 
 			// Deserializing JSON to struct, thanks to `serde` and `serde_derive`
-			let dp_data: DotPriceData =
-			serde_json::from_str(&resp_str).map_err(|_| <Error<T>>::HttpFetchingError)?;
-			Ok(dp_data)
+			//let dp_data: DotPriceData =
+			//serde_json::from_str(&resp_str).map_err(|_| <Error<T>>::HttpFetchingError)?;
+            //log::info!("fetch_n_parse_dot_price 002");
+			Ok((price_p1, price_p2_))
 		}
 
 
 		/// This function uses the `offchain::http` API to query the remote github information,
 		///   and returns the JSON response as vector of bytes.
 		fn fetch_from_remote_dot_price() -> Result<Vec<u8>, Error<T>> {
+			log::info!("fetch_from_remote_dot_price 0000");
 			log::info!("sending request to: {}", HTTP_REMOTE_REQUEST_DOT_PRICE);
 
 			// Initiate an external HTTP GET request. This is using high-level wrappers from `sp_runtime`.
@@ -540,6 +628,7 @@ pub mod pallet {
 				return Err(<Error<T>>::HttpFetchingError);
 			}
 
+			log::info!("fetch_from_remote_dot_price 0001");
 			// Next we fully read the response body and collect it to a vector of bytes.
 			Ok(response.body().collect::<Vec<u8>>())
 		}
