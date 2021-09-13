@@ -1,5 +1,7 @@
 # Substrate Node Template
 
+![输入图片说明](https://images.gitee.com/uploads/images/2021/0914/004807_bf6c063c_9048839.png "屏幕截图.png")
+
 [![Try on playground](https://img.shields.io/badge/Playground-Node_Template-brightgreen?logo=Parity%20Substrate)](https://playground.substrate.dev/?deploy=node-template) [![Matrix](https://img.shields.io/matrix/substrate-technical:matrix.org)](https://matrix.to/#/#substrate-technical:matrix.org)
 
 A fresh FRAME-based [Substrate](https://www.substrate.io/) node, ready for hacking :rocket:
