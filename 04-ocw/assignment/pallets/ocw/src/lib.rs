@@ -108,27 +108,6 @@ pub mod pallet {
 		public_repos: u32,
 	}
 
-    // ref: https://serde.rs/container-attrs.html#crate
-	#[derive(Deserialize, Encode, Decode, Default)]
-    struct DotPriceInfo {
-		#[serde(deserialize_with = "de_string_to_bytes")]
-        id: Vec<u8>,
-		#[serde(deserialize_with = "de_string_to_bytes")]
-        name: Vec<u8>,
-        //supply: VecDeque<(u64, Permill)>,
-        supply: Vec<u8>,
-        #[serde(rename="priceUsd", deserialize_with = "de_string_to_bytes")] 
-        priceUsd: Vec<u8>,
-		#[serde(deserialize_with = "de_string_to_bytes")]
-        explorer: Vec<u8>,
-
-    }
-	#[derive(Deserialize, Encode, Decode, Default)]
-	struct DotPriceData {
-		data: DotPriceInfo,
-		timestamp: u64,
-	}
-
 
 	#[derive(Debug, Deserialize, Encode, Decode, Default)]
 	struct IndexingData(Vec<u8>, u64);
@@ -154,21 +133,6 @@ pub mod pallet {
 				)
 		}
 	}
-
-    impl fmt::Debug for DotPriceInfo {
-		// `fmt` converts the vector of bytes inside the struct back to string for
-		//   more friendly display.
-		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-			write!(
-				f,
-				"{{ id: {}, name: {}, priceUsd: {} }}",
-				str::from_utf8(&self.id).map_err(|_| fmt::Error)?,
-				str::from_utf8(&self.name).map_err(|_| fmt::Error)?,
-				str::from_utf8(&self.priceUsd).map_err(|_| fmt::Error)?,
-				)
-		}
-	}
-
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + CreateSignedTransaction<Call<Self>> {
